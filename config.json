@@ -1,0 +1,24 @@
+{
+  "camera_index": 1,
+  "weights": "C:/Users/user/Documents/jiraf python/metran_241f-t.pt",
+  "conf": 0.8,
+  "classes": [
+    "Box",
+    "Sensor",
+    "Documentation"
+  ],
+  "frame_width": 640,
+  "frame_height": 360,
+  "db": {
+    "host": "localhost",
+    "port": 5432,
+    "dbname": "postgres",
+    "user": "postgres",
+    "password": "admin"
+  },
+  "resolution_preset": "640x360",
+  "snapshot_folder": "C:\\jiraf",
+  "fps": 30,
+  "admin_salt": "78d5179d48e219aaf3398c80d79a83e1",
+  "admin_hash": "8cbfe46421d8bcc1737e578305009caef3c8d7b0e63ba42d6e07a510bc3e32ed"
+}
