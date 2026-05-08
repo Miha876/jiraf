@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from typing import List
 
@@ -31,7 +32,7 @@ from jiraf_app.detection import DetectionResults, OnnxDetector
 class CameraWorker(QtCore.QThread):
     """Поток Qt, который читаем кадры и триггерит детекцию + трекинг."""
 
-    frame_ready = QtCore.Signal(np.ndarray, np.ndarray, list, bool)
+    frame_ready = QtCore.Signal(object, object, object, bool)
     status_changed = QtCore.Signal(str)
     log_line = QtCore.Signal(str)
 
@@ -64,9 +65,19 @@ class CameraWorker(QtCore.QThread):
         self._tracker_disabled = False
         self._last_track_error_ts = 0.0
         self._last_error_ts = 0.0
+        self._model_init_started = False
+        self._settings_lock = threading.Lock()
 
     def stop(self):
         self._running = False
+
+    def update_runtime_settings(self, conf: float | None = None, fps: int | None = None) -> None:
+        """Легко обновляет параметры без пересоздания worker."""
+        with self._settings_lock:
+            if conf is not None:
+                self._conf = float(conf)
+            if fps is not None:
+                self._fps = int(fps)
 
     def _init_model(self):
         """Загружает веса, выбирает ONNX или Ultralytics и подготавливает трекер."""
@@ -150,13 +161,18 @@ class CameraWorker(QtCore.QThread):
         if not resolution_locked or actual_w == 0 or actual_h == 0:
             actual_w, actual_h = pick_best_resolution(cap)
         self.status_changed.emit(f"Разрешение: {actual_w}x{actual_h}")
-
-        self._init_model()
+        if not self._model_init_started:
+            self._model_init_started = True
+            threading.Thread(target=self._init_model, daemon=True).start()
 
         target_interval = 1.0 / self._fps if self._fps else 0.0
         last_frame_ts = time.time()
 
         while self._running:
+            with self._settings_lock:
+                current_fps = self._fps
+                current_conf = self._conf
+            target_interval = 1.0 / current_fps if current_fps else 0.0
             try:
                 ret, frame = cap.read()
             except cv2.error:
@@ -175,7 +191,7 @@ class CameraWorker(QtCore.QThread):
                     continue
                 if self._onnx:
                     # ONNX-ветка возвращает сырые координаты
-                    xyxy, scores, class_ids = self._onnx_detector.infer(frame, self._conf)
+                    xyxy, scores, class_ids = self._onnx_detector.infer(frame, current_conf)
                     if xyxy.size > 0:
                         finite_mask = np.isfinite(xyxy).all(axis=1) & np.isfinite(scores)
                         xyxy = xyxy[finite_mask]
@@ -244,7 +260,7 @@ class CameraWorker(QtCore.QThread):
                         continue
 
                 # YOLO-модель возвращает списки боксов для трекера
-                results = self._model(frame, conf=self._conf, verbose=False, device=self._device)[0]
+                results = self._model(frame, conf=current_conf, verbose=False, device=self._device)[0]
                 boxes = results.boxes
                 if boxes is not None and len(boxes) > 0:
                     xyxy = boxes.xyxy.cpu().numpy()

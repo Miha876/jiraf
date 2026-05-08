@@ -58,7 +58,7 @@ class AdminNotifierWindow(QtWidgets.QWidget):
         self._db_conn = None
         self._allowed_ips: set[str] = set()
         self._last_alert_ts = 0.0
-        self._panic_cooldown_sec = 30
+        self._error_cooldown_sec = 30
         self._last_full_alert_ts = 0.0
         self._full_cooldown_sec = 30
 
@@ -96,7 +96,7 @@ class AdminNotifierWindow(QtWidgets.QWidget):
         row.addWidget(self.source_label, 1)
         header_layout.addLayout(row)
 
-        self.details = QtWidgets.QLabel("Слушаю UDP 50505. События: PANIC, WAREHOUSE_FULL")
+        self.details = QtWidgets.QLabel("Слушаю UDP 50505. События: ERROR_REPORT, WAREHOUSE_FULL")
         self.details.setObjectName("Muted")
         self.details.setWordWrap(True)
         header_layout.addWidget(self.details)
@@ -281,7 +281,7 @@ class AdminNotifierWindow(QtWidgets.QWidget):
     def _set_status_style(self, status: str):
         styles = {
             "IDLE": "background:#34495e; color:#e7edf6;",
-            "PANIC": "background:#b42318; color:#ffffff;",
+            "ERROR_REPORT": "background:#b42318; color:#ffffff;",
             "WAREHOUSE_FULL": "background:#b54708; color:#ffffff;",
             "INFO": "background:#175cd3; color:#ffffff;",
         }
@@ -299,10 +299,11 @@ class AdminNotifierWindow(QtWidgets.QWidget):
         event = str(text).strip()
         kind = "INFO"
 
-        if event.startswith("PANIC"):
-            kind = "PANIC"
-            self.title.setText("ПАНИКА")
-            self.details.setText(event)
+        if event.startswith("ERROR_REPORT"):
+            kind = "ERROR_REPORT"
+            payload = event.removeprefix("ERROR_REPORT").strip()
+            self.title.setText("Сообщение об ошибке")
+            self.details.setText(payload or "Пришло сообщение об ошибке")
         elif event.startswith("WAREHOUSE_FULL"):
             kind = "WAREHOUSE_FULL"
             self.title.setText("Склад заполнен")
@@ -321,9 +322,9 @@ class AdminNotifierWindow(QtWidgets.QWidget):
         self.activateWindow()
 
         now = QtCore.QTime.currentTime().msecsSinceStartOfDay() / 1000.0
-        if kind == "PANIC" and now - self._last_alert_ts >= self._panic_cooldown_sec:
+        if kind == "ERROR_REPORT" and now - self._last_alert_ts >= self._error_cooldown_sec:
             self._last_alert_ts = now
-            QtWidgets.QMessageBox.warning(self, "ПАНИКА", "Ожидайте администратора")
+            QtWidgets.QMessageBox.warning(self, "Сообщение об ошибке", self.details.text())
         if kind == "WAREHOUSE_FULL" and now - self._last_full_alert_ts >= self._full_cooldown_sec:
             self._last_full_alert_ts = now
             QtWidgets.QMessageBox.warning(self, "Склад заполнен", "Свободные ячейки A1..Z10 закончились")

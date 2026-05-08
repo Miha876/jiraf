@@ -27,7 +27,7 @@ from jiraf_app.configuration import (
 )
 from jiraf_app.database import create_db_schema, log_event
 from jiraf_app.helpers import encode_frame_png
-from jiraf_app.video import enumerate_camera_names, enumerate_cameras
+from jiraf_app.video import enumerate_camera_names
 from jiraf_app.worker import CameraWorker
 
 """Главное окно с табами отображения видео и админки."""
@@ -67,7 +67,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._worker = None
         self._last_status = ""
         self._last_status_ts = 0.0
-        self._panic = False
         self._admin_unlocked = False
 
         self._build_ui()
@@ -75,7 +74,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_cameras()
         self._start_camera()
         self._camera_poll_timer = QtCore.QTimer(self)
-        self._camera_poll_timer.setInterval(2000)
+        self._camera_poll_timer.setInterval(5000)
         self._camera_poll_timer.timeout.connect(self._poll_cameras)
         self._camera_poll_timer.start()
 
@@ -146,10 +145,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.snapshot_button.clicked.connect(self._save_snapshot)
         right_layout.addWidget(self.snapshot_button)
 
-        self.panic_button = QtWidgets.QPushButton("ПАНИКА")
-        self.panic_button.setStyleSheet("background:#b91c1c; color:#fff;")
-        self.panic_button.clicked.connect(self._panic_on)
-        right_layout.addWidget(self.panic_button)
+        self.report_error_button = QtWidgets.QPushButton("Сообщить об ошибке")
+        self.report_error_button.setStyleSheet("background:#b45309; color:#fff;")
+        self.report_error_button.clicked.connect(self._report_error)
+        right_layout.addWidget(self.report_error_button)
 
         main_layout.addWidget(self.preview, 3)
         main_layout.addWidget(right_panel, 1)
@@ -216,10 +215,6 @@ class MainWindow(QtWidgets.QMainWindow):
         pass_row.addWidget(self.admin_pass_button)
         admin_layout.addRow("Новый пароль", pass_row)
 
-        self.unpanic_button = QtWidgets.QPushButton("Снять панику")
-        self.unpanic_button.clicked.connect(self._panic_off)
-        admin_layout.addRow(self.unpanic_button)
-
         self.reset_config_button = QtWidgets.QPushButton("Сбросить конфиг")
         self.reset_config_button.clicked.connect(self._reset_config)
         admin_layout.addRow(self.reset_config_button)
@@ -278,7 +273,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.fps_edit,
             self.admin_pass_edit,
             self.admin_pass_button,
-            self.unpanic_button,
             self.reset_config_button,
             self.db_host,
             self.db_port,
@@ -361,19 +355,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.camera_combo.blockSignals(True)
         self.camera_combo.clear()
         names = enumerate_camera_names()
-        indices = enumerate_cameras(10)
-        if not indices:
+        if not names:
             self.camera_combo.addItem("Камеры не найдены", None)
             self.camera_combo.blockSignals(False)
-            return
-        # Если имена пришли без корректных индексов, привяжем по порядку
-        name_map = names
-        if names and not all(idx in names for idx in indices):
-            ordered_names = [names[k] for k in sorted(names.keys())]
-            if len(ordered_names) == len(indices):
-                name_map = {idx: ordered_names[i] for i, idx in enumerate(indices)}
-        for idx in indices:
-            name = name_map.get(idx, f"Камера #{idx}")
+            return False
+        for idx in sorted(names.keys()):
+            name = names.get(idx, f"Камера #{idx}")
             self.camera_combo.addItem(f"{name} (#{idx})", idx)
         current_idx = self.cfg.get("camera_index", 0)
         match = self.camera_combo.findData(current_idx)
@@ -386,12 +373,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.cfg["camera_index"] = int(selected)
                 save_config(self.cfg)
         self.camera_combo.blockSignals(False)
-        return bool(indices)
+        return True
 
     def _poll_cameras(self):
         """Периодически ищем камеру, чтобы подхватить ее без перезапуска."""
-        if self._panic:
-            return
         had_cameras = self._refresh_cameras()
         if had_cameras and (self._worker is None or not self._worker.isRunning()):
             if self.camera_combo.currentData() is not None:
@@ -400,9 +385,6 @@ class MainWindow(QtWidgets.QMainWindow):
     def _start_camera(self):
         """Создаем рабочий поток и подключаем сигналы для кадра и статуса."""
         self._stop_camera()
-        if self._panic:
-            self.status_header.setText("ПАНИКА")
-            return
         if hasattr(self, "camera_combo") and self.camera_combo.currentData() is None:
             self.status_header.setText("Камера не найдена")
             self._append_log("Камера не найдена: проверьте подключение и нажмите «Обновить список»")
@@ -420,6 +402,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._worker.log_line.connect(self._append_log)
         self._worker.start()
         self._append_log(f"Camera index: {cam_index}")
+        self._append_log("Стрим камеры запущен")
         self._log_db("INFO", "camera_start", f"index={cam_index}")
         self._append_log(f"Weights: {weights}")
 
@@ -448,28 +431,22 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._db_conn:
             log_event(self._db_conn, level, event, details)
 
-    def _panic_on(self):
-        if self._panic:
+    def _report_error(self):
+        text, ok = QtWidgets.QInputDialog.getMultiLineText(
+            self,
+            "Сообщить об ошибке",
+            "Опишите проблему:",
+            "",
+        )
+        if not ok:
             return
-        self._panic = True
-        self.status_header.setText("ПАНИКА")
-        self._append_log("ПАНИКА: нажата кнопка")
-        self._log_db("WARN", "panic_on", "button")
-        self._send_panic_notification()
-        self._stop_camera()
-
-    def _panic_off(self):
-        if not self._panic:
+        message = text.strip()
+        if not message:
             return
-        if not self._ask_admin_password():
-            return
-        self._panic = False
-        self._append_log("ПАНИКА: снята")
-        self._log_db("INFO", "panic_off", "admin")
-        self._start_camera()
-
-    def _send_panic_notification(self):
-        self._broadcast_notification("PANIC")
+        self._append_log(f"Ошибка отправлена: {message}")
+        self._log_db("WARN", "error_report", message)
+        self._broadcast_notification(f"ERROR_REPORT {message}")
+        self.status_header.setText("Сообщение отправлено")
 
     def _send_warehouse_full_notification(self):
         self._broadcast_notification("WAREHOUSE_FULL")
@@ -654,15 +631,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_frame(self, raw_frame: np.ndarray, frame: np.ndarray, classes: list, tracking_ok: bool):
         """Переводит кадр в QPixmap и обновляет статусы детекции."""
-        if self._panic:
-            self.status_header.setText("ПАНИКА")
-            return
         self._last_frame = raw_frame
         self._last_classes = classes
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         bytes_per_line = ch * w
-        qimg = QtGui.QImage(rgb.data, w, h, bytes_per_line, QtGui.QImage.Format_RGB888)
+        qimg = QtGui.QImage(rgb.data, w, h, bytes_per_line, QtGui.QImage.Format_RGB888).copy()
         pix = QtGui.QPixmap.fromImage(qimg)
         self.preview.setPixmap(
             pix.scaled(self.preview.size(), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
@@ -764,14 +738,18 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._admin_unlocked:
             return
         self._persist_settings()
-        self._start_camera()
+        if self._worker and self._worker.isRunning():
+            self._worker.update_runtime_settings(conf=float(self.conf_edit.value()))
+        self._append_log(f"conf обновлен: {self.conf_edit.value():.2f}")
 
     def _on_fps_changed(self):
         """Перезапускаем поток при смене ограничения FPS."""
         if not self._admin_unlocked:
             return
         self._persist_settings()
-        self._start_camera()
+        if self._worker and self._worker.isRunning():
+            self._worker.update_runtime_settings(fps=int(self.fps_edit.value()))
+        self._append_log(f"FPS обновлен: {int(self.fps_edit.value())}")
 
     def _on_resolution_changed(self):
         """Синхронизируем пресет и перезапускаем поток при смене размеров."""

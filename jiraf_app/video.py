@@ -11,19 +11,21 @@ import cv2
 
 """Утилиты для поиска камер и настройки разрешения."""
 
+try:
+    cv2.setLogLevel(cv2.LOG_LEVEL_SILENT)
+except Exception:
+    try:
+        cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_SILENT)
+    except Exception:
+        pass
+
 
 def enumerate_cameras(max_index: int = 10) -> List[int]:
-    """Пробует открыть камеры по индексам и возвращает те, с которых идет кадр."""
+    """Возвращает индексы камер из списка имен без тяжелой проверки кадра."""
     names = enumerate_camera_names()
-    max_probe = max(names.keys()) if names else max_index
-    available = []
-    for idx in range(max_probe + 1):
-        cap = open_camera(idx)
-        if cap is not None and cap.isOpened():
-            available.append(idx)
-        if cap is not None:
-            cap.release()
-    return available
+    if names:
+        return sorted(names.keys())
+    return list(range(max_index + 1))
 
 
 def open_camera(index: int) -> Optional[cv2.VideoCapture]:
