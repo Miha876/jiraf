@@ -74,6 +74,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_theme()
         self._refresh_cameras()
         self._start_camera()
+        self._camera_poll_timer = QtCore.QTimer(self)
+        self._camera_poll_timer.setInterval(2000)
+        self._camera_poll_timer.timeout.connect(self._poll_cameras)
+        self._camera_poll_timer.start()
 
     def closeEvent(self, event):
         self._stop_camera()
@@ -359,18 +363,17 @@ class MainWindow(QtWidgets.QMainWindow):
         names = enumerate_camera_names()
         indices = enumerate_cameras(10)
         if not indices:
-            indices = [0]
+            self.camera_combo.addItem("Камеры не найдены", None)
+            self.camera_combo.blockSignals(False)
+            return
         # Если имена пришли без корректных индексов, привяжем по порядку
         name_map = names
-        if not names and len(indices) == 1:
-            # Частый кейс: единственная камера — OBS Virtual Camera
-            name_map = {indices[0]: "OBS Virtual Camera"}
         if names and not all(idx in names for idx in indices):
             ordered_names = [names[k] for k in sorted(names.keys())]
             if len(ordered_names) == len(indices):
                 name_map = {idx: ordered_names[i] for i, idx in enumerate(indices)}
         for idx in indices:
-            name = name_map.get(idx, f"USB {idx}")
+            name = name_map.get(idx, f"Камера #{idx}")
             self.camera_combo.addItem(f"{name} (#{idx})", idx)
         current_idx = self.cfg.get("camera_index", 0)
         match = self.camera_combo.findData(current_idx)
@@ -378,13 +381,31 @@ class MainWindow(QtWidgets.QMainWindow):
             self.camera_combo.setCurrentIndex(match)
         else:
             self.camera_combo.setCurrentIndex(0)
+            selected = self.camera_combo.currentData()
+            if selected is not None:
+                self.cfg["camera_index"] = int(selected)
+                save_config(self.cfg)
         self.camera_combo.blockSignals(False)
+        return bool(indices)
+
+    def _poll_cameras(self):
+        """Периодически ищем камеру, чтобы подхватить ее без перезапуска."""
+        if self._panic:
+            return
+        had_cameras = self._refresh_cameras()
+        if had_cameras and (self._worker is None or not self._worker.isRunning()):
+            if self.camera_combo.currentData() is not None:
+                self._start_camera()
 
     def _start_camera(self):
         """Создаем рабочий поток и подключаем сигналы для кадра и статуса."""
         self._stop_camera()
         if self._panic:
             self.status_header.setText("ПАНИКА")
+            return
+        if hasattr(self, "camera_combo") and self.camera_combo.currentData() is None:
+            self.status_header.setText("Камера не найдена")
+            self._append_log("Камера не найдена: проверьте подключение и нажмите «Обновить список»")
             return
         cam_index = int(self.cfg.get("camera_index", 0))
         weights = self.cfg.get("weights", DEFAULT_WEIGHTS)

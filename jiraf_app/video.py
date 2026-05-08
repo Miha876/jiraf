@@ -1,6 +1,10 @@
 ﻿# coding=utf-8
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
+import time
 from typing import Dict, List, Optional, Tuple
 
 import cv2
@@ -9,11 +13,9 @@ import cv2
 
 
 def enumerate_cameras(max_index: int = 10) -> List[int]:
-    """Пробует открыть камеры по индексам и возвращает доступные."""
+    """Пробует открыть камеры по индексам и возвращает те, с которых идет кадр."""
     names = enumerate_camera_names()
-    max_probe = max_index
-    if names:
-        max_probe = max(max_index, max(names.keys()))
+    max_probe = max(names.keys()) if names else max_index
     available = []
     for idx in range(max_probe + 1):
         cap = open_camera(idx)
@@ -25,10 +27,11 @@ def enumerate_cameras(max_index: int = 10) -> List[int]:
 
 
 def open_camera(index: int) -> Optional[cv2.VideoCapture]:
-    """Открывает камеру с заданным индексом, перебирая доступные бэкенды."""
-    for backend in (cv2.CAP_DSHOW, cv2.CAP_MSMF):
+    """Открывает камеру с заданным индексом и проверяет, что с нее читается кадр."""
+    backends = (cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY)
+    for backend in backends:
         cap = cv2.VideoCapture(index, backend)
-        if cap.isOpened():
+        if cap.isOpened() and _can_read_frame(cap):
             return cap
         cap.release()
     return None
@@ -36,6 +39,28 @@ def open_camera(index: int) -> Optional[cv2.VideoCapture]:
 
 def enumerate_camera_names() -> Dict[int, str]:
     """Читает человекочитаемые имена камер через DirectShow."""
+    names = _enumerate_camera_names_directshow()
+    if names:
+        return names
+    return _enumerate_camera_names_powershell()
+
+
+def _can_read_frame(cap: cv2.VideoCapture) -> bool:
+    """Некоторые виртуальные/битые камеры открываются, но не отдают кадры."""
+    deadline = time.time() + 1.5
+    while time.time() < deadline:
+        try:
+            ok, frame = cap.read()
+        except cv2.error:
+            return False
+        if ok and frame is not None and frame.size:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def _enumerate_camera_names_directshow() -> Dict[int, str]:
+    """Читает имена камер из DirectShow в порядке, близком к индексам OpenCV."""
     names: Dict[int, str] = {}
     try:
         import comtypes.client  # type: ignore
@@ -77,6 +102,46 @@ def enumerate_camera_names() -> Dict[int, str]:
         names = {}  # Если DirectShow недоступен, вернем пустой набор
 
     return names
+
+
+def _enumerate_camera_names_powershell() -> Dict[int, str]:
+    """Fallback для Windows: берем имена устройств из PnP/CIM."""
+    if not sys.platform.startswith("win"):
+        return {}
+
+    script = r"""
+$devices = Get-CimInstance Win32_PnPEntity |
+  Where-Object {
+    $_.Name -and (
+      $_.PNPClass -eq 'Camera' -or
+      $_.PNPClass -eq 'Image' -or
+      $_.Name -match 'camera|webcam|веб'
+    )
+  } |
+  Select-Object -ExpandProperty Name
+$devices | ConvertTo-Json -Compress
+"""
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except Exception:
+        return {}
+    if result.returncode != 0 or not result.stdout.strip():
+        return {}
+    try:
+        parsed = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(parsed, str):
+        parsed = [parsed]
+    if not isinstance(parsed, list):
+        return {}
+    return {idx: str(name) for idx, name in enumerate(parsed) if str(name).strip()}
 
 
 def pick_best_resolution(cap: cv2.VideoCapture) -> Tuple[int, int]:
